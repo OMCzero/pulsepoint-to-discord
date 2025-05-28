@@ -59,7 +59,7 @@ export class PulsePointWorkflow extends WorkflowEntrypoint<Env, Params> {
   async run(event: WorkflowEvent<Params>, step: WorkflowStep) {
     // Step 1: Fetch data from PulsePoint
     const pulsePointResponse = await step.do('Fetch PulsePoint data', async () => {
-      const response = await fetch('https://web.pulsepoint.org/DB/giba.php?agency_id=EMS1201');
+      const response = await fetch('https://api.pulsepoint.org/v1/webapp?resource=incidents&agencyid=EMS1201');
       if (!response.ok) {
         throw new Error(`Failed to fetch from PulsePoint: ${response.status}`);
       }
@@ -74,6 +74,7 @@ export class PulsePointWorkflow extends WorkflowEntrypoint<Env, Params> {
       try {
         // Decrypt the data
         const decrypted = await decryptPulsePointData(pulsePointResponse);
+        //console.log(decrypted)
         
         // Process incidents from the decrypted data
         const activeIncidents = decrypted.incidents?.active || [];
