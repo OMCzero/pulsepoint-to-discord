@@ -19,7 +19,8 @@ Thanks to [Davnit](https://gist.github.com/Davnit/4a6e7dd94d97a05c3806b306e3d838
 - **Scheduled Polling**: Automatically checks for new incidents every 2 minutes
 - **Location Filtering**: Only processes incidents in specified locations (Vancouver, Burnaby, New Westminster, etc.)
 - **Incident Type Handling**: Routes different types of incidents to different Discord channels
-- **Persistent Storage**: Uses Cloudflare KV to track incidents across worker invocations
+- **Persistent Storage**: Uses Cloudflare KV to track in-flight incidents across worker invocations
+- **Historical Archive**: Records every observed incident in Cloudflare D1 (SQLite) with first/last-seen timestamps and final closed-at marker
 - **GeoJSON RPC**: Exposes a worker-to-worker RPC method that returns active and recent incidents as a GeoJSON `FeatureCollection`
 
 ## Requirements
@@ -43,10 +44,20 @@ Thanks to [Davnit](https://gist.github.com/Davnit/4a6e7dd94d97a05c3806b306e3d838
 
 3. Set up your KV namespace in Cloudflare
     ```bash
-    npx wrangler kv:namespace create PULSEPOINT_KV
+    pnpm wrangler kv:namespace create PULSEPOINT_KV
     ```
 
-4. Update `wrangler.toml` with your KV namespace ID and Discord webhook URLs
+4. Set up your D1 database for historical incident records
+    ```bash
+    pnpm wrangler d1 create pulsepoint-incidents
+    ```
+    Paste the returned `database_id` into `wrangler.toml`, then apply migrations:
+    ```bash
+    pnpm wrangler d1 migrations apply pulsepoint-incidents --local   # for dev
+    pnpm wrangler d1 migrations apply pulsepoint-incidents --remote  # for prod
+    ```
+
+5. Update `wrangler.toml` with your KV namespace ID, D1 database ID, and Discord webhook URLs
 
 ## Development
 

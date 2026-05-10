@@ -11,6 +11,7 @@ export { PulsePointWorkflow };
 interface Env {
   PULSEPOINT_WORKFLOW: Workflow;
   PULSEPOINT_KV: KVNamespace;
+  PULSEPOINT_DB: D1Database;
   DISCORD_WEBHOOK_URL: string;
   DISCORD_STANDBY_WEBHOOK_URL: string;
 }

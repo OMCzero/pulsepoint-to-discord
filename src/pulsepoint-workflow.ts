@@ -5,6 +5,8 @@ import { NonRetryableError } from 'cloudflare:workflows';
 type Env = {
   // KV namespace for storing incident data and tracking
   PULSEPOINT_KV: KVNamespace;
+  // D1 database for historical incident records
+  PULSEPOINT_DB: D1Database;
   // Discord webhook URLs
   DISCORD_WEBHOOK_URL: string;
   DISCORD_STANDBY_WEBHOOK_URL: string;
@@ -30,6 +32,9 @@ interface PulsePointUnit {
 
 interface PulsePointIncident {
   ID: string;
+  AgencyID?: string;
+  Latitude?: string;
+  Longitude?: string;
   Closed?: boolean;
   CallReceivedDateTime?: string;
   PulsePointIncidentCallType?: string;
@@ -110,6 +115,55 @@ export class PulsePointWorkflow extends WorkflowEntrypoint<Env, Params> {
         console.error("Error decrypting/processing data:", error);
         throw new Error(`Failed to decrypt PulsePoint data: ${error}`);
       }
+    });
+
+    // Step 2.5: Record every observed incident in D1 (historical archive)
+    const recordedIncidents = await step.do('Record incidents in D1', async () => {
+      if (incidents.length === 0) return 0;
+
+      const now = new Date().toISOString();
+      const stmt = this.env.PULSEPOINT_DB.prepare(
+        `INSERT INTO incidents (
+           id, agency_id, call_type, raw_call_type, latitude, longitude,
+           address, call_received, first_seen, last_seen, closed, closed_at, units
+         )
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10, CASE WHEN ?10 = 1 THEN ?9 ELSE NULL END, ?11)
+         ON CONFLICT(id) DO UPDATE SET
+           agency_id     = excluded.agency_id,
+           call_type     = excluded.call_type,
+           raw_call_type = excluded.raw_call_type,
+           latitude      = excluded.latitude,
+           longitude     = excluded.longitude,
+           address       = excluded.address,
+           call_received = excluded.call_received,
+           last_seen     = excluded.last_seen,
+           closed        = excluded.closed,
+           closed_at     = COALESCE(incidents.closed_at,
+                                    CASE WHEN excluded.closed = 1 THEN excluded.last_seen ELSE NULL END),
+           units         = excluded.units`
+      );
+
+      const batch = incidents.map((incident) => {
+        const lat = incident.Latitude ? parseFloat(incident.Latitude) : null;
+        const lon = incident.Longitude ? parseFloat(incident.Longitude) : null;
+        return stmt.bind(
+          incident.ID,
+          incident.AgencyID ?? null,
+          incident.DisplayIncidentCallType ?? null,
+          incident.PulsePointIncidentCallType ?? null,
+          Number.isFinite(lat as number) ? lat : null,
+          Number.isFinite(lon as number) ? lon : null,
+          incident.FullDisplayAddress ?? null,
+          incident.CallReceivedDateTime ?? null,
+          now,
+          incident.Closed ? 1 : 0,
+          incident.Unit ? JSON.stringify(incident.Unit) : null
+        );
+      });
+
+      const results = await this.env.PULSEPOINT_DB.batch(batch);
+      console.log(`Recorded ${results.length} incidents in D1`);
+      return results.length;
     });
 
     // Step 3: Get all tracked incidents from KV
@@ -668,6 +722,7 @@ export class PulsePointWorkflow extends WorkflowEntrypoint<Env, Params> {
     // Return stats about the run
     return {
       totalIncidents: incidents.length,
+      recordedIncidents: recordedIncidents,
       trackedIncidents: Object.keys(trackedIncidents).length,
       newIncidents: newIncidents,
       updatedOpenIncidents: updatedOpenIncidents,
@@ -896,7 +951,7 @@ export async function decryptPulsePointData(data: PulsePointResponse): Promise<a
 }
 
 // Helper functions for byte manipulation
-function hexToBytes(hex: string): Uint8Array {
+function hexToBytes(hex: string): Uint8Array<ArrayBuffer> {
   const bytes = new Uint8Array(Math.floor(hex.length / 2));
   for (let i = 0; i < bytes.length; i++) {
     bytes[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
@@ -904,7 +959,7 @@ function hexToBytes(hex: string): Uint8Array {
   return bytes;
 }
 
-function concatenateArrays(...arrays: Uint8Array[]): Uint8Array {
+function concatenateArrays(...arrays: Uint8Array[]): Uint8Array<ArrayBuffer> {
   const totalLength = arrays.reduce((len, arr) => len + arr.length, 0);
   const result = new Uint8Array(totalLength);
   
