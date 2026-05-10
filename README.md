@@ -20,7 +20,7 @@ Thanks to [Davnit](https://gist.github.com/Davnit/4a6e7dd94d97a05c3806b306e3d838
 - **Location Filtering**: Only processes incidents in specified locations (Vancouver, Burnaby, New Westminster, etc.)
 - **Incident Type Handling**: Routes different types of incidents to different Discord channels
 - **Persistent Storage**: Uses Cloudflare KV to track incidents across worker invocations
-- **Manual Controls**: HTTP endpoints for triggering workflows and managing incident tracking
+- **GeoJSON RPC**: Exposes a worker-to-worker RPC method that returns active and recent incidents as a GeoJSON `FeatureCollection`
 
 ## Requirements
 
@@ -38,7 +38,7 @@ Thanks to [Davnit](https://gist.github.com/Davnit/4a6e7dd94d97a05c3806b306e3d838
 
 2. Install dependencies
     ```bash
-    npm install
+    pnpm install
     ```
 
 3. Set up your KV namespace in Cloudflare
@@ -52,25 +52,35 @@ Thanks to [Davnit](https://gist.github.com/Davnit/4a6e7dd94d97a05c3806b306e3d838
 
 Run the worker locally:
 ```bash
-npm run dev
+pnpm dev
 ```
 
 ## Deployment
 
 Deploy to Cloudflare Workers:
 ```bash
-npm run deploy
+pnpm deploy
 ```
 
-## API Endpoints
+## Service Binding (RPC)
 
-The worker exposes the following HTTP endpoints:
+The worker has no public HTTP endpoints. Instead, it exposes a typed RPC method consumable by another Worker via a service binding.
 
-- `GET /` - Shows usage instructions
-- `POST /trigger` - Manually triggers the workflow
-- `GET /latest-id` - Gets the latest incident ID that was processed
-- `POST /reset-id` - Resets the latest incident ID (send JSON with "id" field)
-- `GET /?instanceId=xxx` - Checks the status of a workflow instance
+In the consuming Worker's `wrangler.toml`:
+
+```toml
+[[services]]
+binding = "PULSEPOINT"
+service = "pulsepoint-to-discord"
+```
+
+Then call it directly:
+
+```ts
+const geo = await env.PULSEPOINT.getIncidentsGeoJSON();
+// → GeoJSON FeatureCollection of active + recent incidents
+//   (each Feature has a Point geometry and incident properties; `closed: true` marks recent/closed incidents)
+```
 
 ## Configuration
 

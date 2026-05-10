@@ -773,7 +773,7 @@ function buildDiscordFields(incident: PulsePointIncident): DiscordField[] {
 }
 
 // Helper functions for mapping status codes
-function mapDispatchStatus(status: string | undefined): string {
+export function mapDispatchStatus(status: string | undefined): string {
   if (!status) return 'Unknown';
   
   const statusMap: Record<string, string> = {
@@ -788,7 +788,7 @@ function mapDispatchStatus(status: string | undefined): string {
   return statusMap[status] || 'Unknown';
 }
 
-function mapIncidentCallType(callType: string | undefined): string {
+export function mapIncidentCallType(callType: string | undefined): string {
   if (!callType) return 'Unknown';
   
   const typeMap: Record<string, string> = {
@@ -803,7 +803,7 @@ function mapIncidentCallType(callType: string | undefined): string {
 }
 
 // PulsePoint decryption function
-async function decryptPulsePointData(data: PulsePointResponse): Promise<any> {
+export async function decryptPulsePointData(data: PulsePointResponse): Promise<any> {
   // original logic from https://gist.github.com/Davnit/4a6e7dd94d97a05c3806b306e3d838c6
   //console.log("Starting decryption with data:", Object.keys(data).join(', '));
   

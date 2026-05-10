@@ -1,6 +1,13 @@
-export { PulsePointWorkflow } from './pulsepoint-workflow';
+import { WorkerEntrypoint } from 'cloudflare:workers';
+import {
+  PulsePointWorkflow,
+  decryptPulsePointData,
+  mapDispatchStatus,
+  mapIncidentCallType,
+} from './pulsepoint-workflow';
 
-// Define environment binding types
+export { PulsePointWorkflow };
+
 interface Env {
   PULSEPOINT_WORKFLOW: Workflow;
   PULSEPOINT_KV: KVNamespace;
@@ -8,81 +15,87 @@ interface Env {
   DISCORD_STANDBY_WEBHOOK_URL: string;
 }
 
-export default {
-  // This runs on the configured cron schedule (every minute)
-  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    // Create a new Workflow instance when triggered by the schedule
-    const instance = await env.PULSEPOINT_WORKFLOW.create();
+interface GeoJSONFeature {
+  type: 'Feature';
+  geometry: { type: 'Point'; coordinates: [number, number] };
+  properties: Record<string, unknown>;
+}
+
+interface GeoJSONFeatureCollection {
+  type: 'FeatureCollection';
+  features: GeoJSONFeature[];
+}
+
+interface RawIncident {
+  ID: string;
+  AgencyID?: string;
+  Latitude?: string;
+  Longitude?: string;
+  PulsePointIncidentCallType?: string;
+  CallReceivedDateTime?: string;
+  FullDisplayAddress?: string;
+  MedicalEmergencyDisplayAddress?: string;
+  Unit?: Array<{
+    UnitID: string;
+    PulsePointDispatchStatus: string;
+    UnitClearedDateTime?: string;
+  }>;
+}
+
+function incidentToFeature(incident: RawIncident, closed: boolean): GeoJSONFeature | null {
+  const lat = parseFloat(incident.Latitude ?? '');
+  const lon = parseFloat(incident.Longitude ?? '');
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+
+  const units = (incident.Unit ?? []).map((u) => ({
+    unitId: u.UnitID,
+    status: mapDispatchStatus(u.PulsePointDispatchStatus),
+    rawStatus: u.PulsePointDispatchStatus,
+    clearedAt: u.UnitClearedDateTime,
+  }));
+
+  return {
+    type: 'Feature',
+    geometry: { type: 'Point', coordinates: [lon, lat] },
+    properties: {
+      id: incident.ID,
+      agencyId: incident.AgencyID,
+      callType: mapIncidentCallType(incident.PulsePointIncidentCallType),
+      rawCallType: incident.PulsePointIncidentCallType,
+      address: incident.FullDisplayAddress,
+      callReceived: incident.CallReceivedDateTime,
+      closed,
+      units,
+      pulsepointUrl: `https://web.pulsepoint.org/?agencies=${incident.AgencyID ?? 'EMS1201'}&incident=${incident.ID}`,
+    },
+  };
+}
+
+export default class PulsePointService extends WorkerEntrypoint<Env> {
+  async scheduled(controller: ScheduledController): Promise<void> {
+    const instance = await this.env.PULSEPOINT_WORKFLOW.create();
     console.log(`Started PulsePoint workflow: ${instance.id}`);
-  },
-
-  // This allows manual triggering and status checks via HTTP
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const url = new URL(request.url);
-    
-    // Check status of an existing workflow instance
-    const instanceId = url.searchParams.get('instanceId');
-    if (instanceId) {
-      try {
-        const instance = await env.PULSEPOINT_WORKFLOW.get(instanceId);
-        return Response.json({
-          id: instance.id,
-          status: await instance.status()
-        });
-      } catch (error) {
-        return Response.json({ error: `Instance not found: ${instanceId}` }, { status: 404 });
-      }
-    }
-
-    // Manually trigger workflow
-    if (url.pathname === '/trigger') {
-      const instance = await env.PULSEPOINT_WORKFLOW.create();
-      return Response.json({
-        id: instance.id,
-        message: 'Workflow instance created',
-        status: await instance.status()
-      });
-    }
-
-    // Get the latest stored incident ID
-    if (url.pathname === '/latest-id') {
-      const latestId = await env.PULSEPOINT_KV.get('latestIncidentId');
-      return Response.json({
-        latestIncidentId: latestId || '0'
-      });
-    }
-
-    // Reset the latest incident ID (useful for testing)
-    if (url.pathname === '/reset-id' && request.method === 'POST') {
-      const body = await request.json<{ id?: string }>();
-      const newId = body.id || '0';
-      await env.PULSEPOINT_KV.put('latestIncidentId', newId);
-      return Response.json({
-        message: `Latest incident ID reset to ${newId}`
-      });
-    }
-
-    // Default response with usage instructions
-    return new Response(
-      `
-      <html>
-        <body>
-          <h1>PulsePoint to Discord Workflow</h1>
-          <p>Available endpoints:</p>
-          <ul>
-            <li><a href="/trigger">POST /trigger</a> - Manually trigger the workflow</li>
-            <li><a href="/latest-id">GET /latest-id</a> - Get the latest incident ID that was processed</li>
-            <li>POST /reset-id - Reset the latest incident ID (send JSON with "id" field)</li>
-            <li>GET /?instanceId=xxx - Check the status of a workflow instance</li>
-          </ul>
-        </body>
-      </html>
-      `,
-      {
-        headers: {
-          'Content-Type': 'text/html; charset=UTF-8'
-        }
-      }
-    );
   }
-};
+
+  // RPC method — callable from another Worker via a service binding:
+  //   const geo = await env.PULSEPOINT.getIncidentsGeoJSON();
+  async getIncidentsGeoJSON(): Promise<GeoJSONFeatureCollection> {
+    const upstream = await fetch(
+      'https://api.pulsepoint.org/v1/webapp?resource=incidents&agencyid=EMS1201'
+    );
+    if (!upstream.ok) {
+      throw new Error(`PulsePoint upstream error: ${upstream.status}`);
+    }
+
+    const decrypted = await decryptPulsePointData(await upstream.json());
+    const active: RawIncident[] = decrypted.incidents?.active ?? [];
+    const recent: RawIncident[] = decrypted.incidents?.recent ?? [];
+
+    const features = [
+      ...active.map((i) => incidentToFeature(i, false)),
+      ...recent.map((i) => incidentToFeature(i, true)),
+    ].filter((f): f is GeoJSONFeature => f !== null);
+
+    return { type: 'FeatureCollection', features };
+  }
+}
